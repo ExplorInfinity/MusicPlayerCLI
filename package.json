@@ -1,0 +1,17 @@
+{
+  "name": "music-player-cli",
+  "version": "1.0.0",
+  "description": "A keyboard-friendly terminal music player powered by VLC.",
+  "main": "src/index.js",
+  "bin": {
+    "music-player": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "check": "node --check src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}
