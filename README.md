@@ -26,6 +26,9 @@ VLC_PATH="/path/to/vlc" npm start -- /path/to/your/music
 | Key | Action |
 | --- | --- |
 | `↑` / `↓` or `k` / `j` | Select a track |
+| `/` | Start live search/filter |
+| `Backspace` / `Esc` | Edit or clear search |
+| `Enter` while searching | Keep the current filter |
 | `Enter` | Play the selected track |
 | `1`–`9999` | Jump to a track number; press Enter or wait briefly |
 | `Space` | Pause/resume through VLC |

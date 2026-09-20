@@ -4,49 +4,55 @@ const { displayName, shorten } = require('./playlist');
 const VlcPlayer = require('./vlc-player');
 
 function createApp(tracks, musicRoot, vlcBinary) {
+    const allTracks = tracks;
+    let visibleTracks = allTracks;
     let selectedIndex = 0;
-    let playingIndex = -1;
+    let playingTrack = null;
     let status = 'Ready — press Enter to play';
     let numberBuffer = '';
     let numberTimer = null;
     let shuttingDown = false;
     let showHelp = false;
+    let searchMode = false;
+    let searchQuery = '';
     let alternateScreenActive = false;
     let renderTimer = null;
 
     const player = new VlcPlayer(vlcBinary, ({ error } = {}) => {
         if (shuttingDown) return;
         if (error) {
-            playingIndex = -1;
+            playingTrack = null;
             status = `VLC error: ${error.message}`;
             render();
             return;
         }
 
-        if (playingIndex >= 0 && playingIndex < tracks.length - 1) {
-            playingIndex += 1;
-            selectedIndex = playingIndex;
-            status = `Finished — playing ${displayName(tracks[playingIndex])}`;
-            player.play(tracks[playingIndex]);
+        const currentTrackIndex = allTracks.indexOf(playingTrack);
+        if (currentTrackIndex >= 0 && currentTrackIndex < allTracks.length - 1) {
+            playingTrack = allTracks[currentTrackIndex + 1];
+            const visibleIndex = visibleTracks.indexOf(playingTrack);
+            if (visibleIndex >= 0) selectedIndex = visibleIndex;
+            status = `Finished — playing ${displayName(playingTrack)}`;
+            player.play(playingTrack);
         } else {
-            playingIndex = -1;
+            playingTrack = null;
             status = 'Playlist finished';
         }
         render();
     });
 
     function selectTrack(index) {
-        if (index < 0 || index >= tracks.length) return;
+        if (index < 0 || index >= visibleTracks.length) return;
         selectedIndex = index;
-        playingIndex = index;
-        status = `Playing ${displayName(tracks[index])}`;
-        player.play(tracks[index]);
+        playingTrack = visibleTracks[index];
+        status = `Playing ${displayName(playingTrack)}`;
+        player.play(playingTrack);
         render();
     }
 
     function stopPlayback() {
         player.stop();
-        playingIndex = -1;
+        playingTrack = null;
         status = 'Stopped';
         render();
     }
@@ -56,10 +62,10 @@ function createApp(tracks, musicRoot, vlcBinary) {
         const index = Number(numberBuffer) - 1;
         numberBuffer = '';
         if (numberTimer) clearTimeout(numberTimer);
-        if (Number.isInteger(index) && index >= 0 && index < tracks.length) {
+        if (Number.isInteger(index) && index >= 0 && index < visibleTracks.length) {
             selectTrack(index);
         } else {
-            status = `No track ${index + 1}; choose 1–${tracks.length}`;
+            status = `No track ${index + 1}; choose 1–${visibleTracks.length}`;
             render();
         }
     }
@@ -69,9 +75,32 @@ function createApp(tracks, musicRoot, vlcBinary) {
         if (numberBuffer.length > 4) numberBuffer = numberBuffer.slice(-4);
         if (numberTimer) clearTimeout(numberTimer);
         numberTimer = setTimeout(() => {
-            if (numberBuffer && Number(numberBuffer) <= tracks.length) jumpToNumber();
+            if (numberBuffer && Number(numberBuffer) <= visibleTracks.length) jumpToNumber();
         }, 850);
         render();
+    }
+
+    function applySearch() {
+        const query = searchQuery.trim().toLowerCase();
+        visibleTracks = query
+            ? allTracks.filter((filePath) => {
+                const relativePath = path.relative(musicRoot, filePath).toLowerCase();
+                return relativePath.includes(query) || displayName(filePath).toLowerCase().includes(query);
+            })
+            : allTracks;
+
+        if (visibleTracks.length === 0) {
+            selectedIndex = 0;
+        } else {
+            const playingIndex = playingTrack ? visibleTracks.indexOf(playingTrack) : -1;
+            selectedIndex = playingIndex >= 0
+                ? playingIndex
+                : Math.min(selectedIndex, visibleTracks.length - 1);
+        }
+
+        status = searchQuery
+            ? `${visibleTracks.length} match${visibleTracks.length === 1 ? '' : 'es'} for "${searchQuery}"`
+            : 'Search cleared';
     }
 
     function render() {
@@ -80,35 +109,44 @@ function createApp(tracks, musicRoot, vlcBinary) {
         const half = Math.floor(visibleRows / 2);
         const start = Math.min(
             Math.max(0, selectedIndex - half),
-            Math.max(0, tracks.length - visibleRows)
+            Math.max(0, visibleTracks.length - visibleRows)
         );
-        const end = Math.min(tracks.length, start + visibleRows);
+        const end = Math.min(visibleTracks.length, start + visibleRows);
         const rootLabel = path.relative(process.cwd(), musicRoot) || '.';
+        const trackSummary = searchQuery.trim()
+            ? `${visibleTracks.length} match${visibleTracks.length === 1 ? '' : 'es'} / ${allTracks.length} tracks`
+            : `${allTracks.length} track${allTracks.length === 1 ? '' : 's'}`;
 
         const lines = [
             `${ANSI.cyan}${ANSI.bold}♫  MUSIC PLAYER CLI${ANSI.reset}  ${ANSI.dim}${rootLabel}${ANSI.reset}`,
-            `${ANSI.dim}${tracks.length} track${tracks.length === 1 ? '' : 's'} • VLC: ${path.basename(vlcBinary)}${ANSI.reset}`,
+            `${ANSI.dim}${trackSummary} • VLC: ${path.basename(vlcBinary)}${ANSI.reset}`,
             ''
         ];
 
         for (let index = start; index < end; index += 1) {
             const isSelected = index === selectedIndex;
-            const isPlaying = index === playingIndex;
+            const isPlaying = visibleTracks[index] === playingTrack;
             const marker = isPlaying ? (player.paused ? 'Ⅱ' : '▶') : ' ';
-            const prefix = ` ${marker} ${String(index + 1).padStart(String(tracks.length).length, ' ')} `;
-            const title = shorten(displayName(tracks[index]), Math.max(20, terminalWidth - prefix.length - 10));
+            const prefix = ` ${marker} ${String(index + 1).padStart(String(visibleTracks.length).length, ' ')} `;
+            const title = shorten(displayName(visibleTracks[index]), Math.max(20, terminalWidth - prefix.length - 10));
             const row = `${prefix} ${title} `;
             lines.push(isSelected ? `${ANSI.inverse}${row}${ANSI.reset}` : row);
         }
 
+        if (visibleTracks.length === 0) {
+            lines.push(`${ANSI.dim}No matching tracks${ANSI.reset}`);
+        }
+
         if (start > 0) lines.splice(3, 0, `${ANSI.dim}  ↑ more above${ANSI.reset}`);
-        if (end < tracks.length) lines.push(`${ANSI.dim}  ↓ more below${ANSI.reset}`);
+        if (end < visibleTracks.length) lines.push(`${ANSI.dim}  ↓ more below${ANSI.reset}`);
         lines.push('');
         lines.push(renderProgress(player.getProgress(), Math.min(34, Math.max(20, terminalWidth - 44))));
-        lines.push(`${ANSI.yellow}${numberBuffer ? `Jump: ${numberBuffer}  •  ` : ''}${status}${ANSI.reset}`);
-        lines.push(showHelp
-            ? `${keycap('←/→')} ${ANSI.dim}Skip 5s${ANSI.reset}  ${keycap('↑/↓')} ${ANSI.dim}Move${ANSI.reset}  ${keycap('ENTER')} ${ANSI.dim}Play${ANSI.reset}  ${keycap('1–9999')} ${ANSI.dim}Jump${ANSI.reset}  ${keycap('SPACE')} ${ANSI.dim}Pause${ANSI.reset}  ${keycap('N/P')} ${ANSI.dim}Next/prev${ANSI.reset}  ${keycap('S')} ${ANSI.dim}Stop${ANSI.reset}  ${keycap('?')} ${ANSI.dim}Hide help${ANSI.reset}  ${keycap('Q')} ${ANSI.dim}Quit${ANSI.reset}`
-            : `${keycap('←/→')} ${ANSI.dim}Skip 5s${ANSI.reset}  ${keycap('↑/↓')} ${ANSI.dim}Move${ANSI.reset}  ${keycap('ENTER')} ${ANSI.dim}Play${ANSI.reset}  ${keycap('1–9999')} ${ANSI.dim}Jump${ANSI.reset}  ${keycap('SPACE')} ${ANSI.dim}Pause${ANSI.reset}  ${keycap('N')} ${ANSI.dim}Next${ANSI.reset}  ${keycap('S')} ${ANSI.dim}Stop${ANSI.reset}  ${keycap('?')} ${ANSI.dim}Help${ANSI.reset}  ${keycap('Q')} ${ANSI.dim}Quit${ANSI.reset}`);
+        lines.push(`${ANSI.yellow}${searchMode ? `Search: ${searchQuery || 'type to filter'}  •  ` : numberBuffer ? `Jump: ${numberBuffer}  •  ` : ''}${status}${ANSI.reset}`);
+        lines.push(searchMode
+            ? `${keycap('TYPE')} ${ANSI.dim}Filter${ANSI.reset}  ${keycap('BACKSPACE')} ${ANSI.dim}Edit${ANSI.reset}  ${keycap('ENTER')} ${ANSI.dim}Keep search${ANSI.reset}  ${keycap('ESC')} ${ANSI.dim}Clear${ANSI.reset}`
+            : showHelp
+                ? `${keycap('←/→')} ${ANSI.dim}Skip 5s${ANSI.reset}  ${keycap('↑/↓')} ${ANSI.dim}Move${ANSI.reset}  ${keycap('ENTER')} ${ANSI.dim}Play${ANSI.reset}  ${keycap('1–9999')} ${ANSI.dim}Jump${ANSI.reset}  ${keycap('SPACE')} ${ANSI.dim}Pause${ANSI.reset}  ${keycap('N/P')} ${ANSI.dim}Next/prev${ANSI.reset}  ${keycap('S')} ${ANSI.dim}Stop${ANSI.reset}  ${keycap('?')} ${ANSI.dim}Hide help${ANSI.reset}  ${keycap('Q')} ${ANSI.dim}Quit${ANSI.reset}`
+                : `${keycap('←/→')} ${ANSI.dim}Skip 5s${ANSI.reset}  ${keycap('↑/↓')} ${ANSI.dim}Move${ANSI.reset}  ${keycap('ENTER')} ${ANSI.dim}Play${ANSI.reset}  ${keycap('/')} ${ANSI.dim}Search${ANSI.reset}  ${keycap('1–9999')} ${ANSI.dim}Jump${ANSI.reset}  ${keycap('SPACE')} ${ANSI.dim}Pause${ANSI.reset}  ${keycap('N')} ${ANSI.dim}Next${ANSI.reset}  ${keycap('S')} ${ANSI.dim}Stop${ANSI.reset}  ${keycap('?')} ${ANSI.dim}Help${ANSI.reset}  ${keycap('Q')} ${ANSI.dim}Quit${ANSI.reset}`);
 
         process.stdout.write(`${ANSI.clear}${lines.join('\n')}`);
     }
@@ -138,23 +176,33 @@ function createApp(tracks, musicRoot, vlcBinary) {
 
     function handleKey(data) {
         const key = data.toString();
-        if (key === '\u0003' || key.toLowerCase() === 'q') return shutdown();
+        if (key === '\u0003') return shutdown();
+        if (searchMode) return handleSearchKey(key);
+        if (key.toLowerCase() === 'q') return shutdown();
+        if (key === '/') {
+            searchMode = true;
+            searchQuery = '';
+            status = 'Type to filter tracks';
+            return render();
+        }
         if (key === '\x1b[D' || key === '\x1bOD') return seek(-5);
         if (key === '\x1b[C' || key === '\x1bOC') return seek(5);
         if (key === '\x1b[A' || key === '\x1bOA' || key.toLowerCase() === 'k') {
+            if (visibleTracks.length === 0) return render();
             selectedIndex = Math.max(0, selectedIndex - 1);
             status = 'Ready — press Enter to play';
             return render();
         }
         if (key === '\x1b[B' || key === '\x1bOB' || key.toLowerCase() === 'j') {
-            selectedIndex = Math.min(tracks.length - 1, selectedIndex + 1);
+            if (visibleTracks.length === 0) return render();
+            selectedIndex = Math.min(visibleTracks.length - 1, selectedIndex + 1);
             status = 'Ready — press Enter to play';
             return render();
         }
         if (key === '\r' || key === '\n') return numberBuffer ? jumpToNumber() : selectTrack(selectedIndex);
         if (key === ' ') {
             if (player.togglePause()) {
-                status = player.paused ? 'Paused' : `Playing ${displayName(tracks[playingIndex])}`;
+                status = player.paused ? 'Paused' : `Playing ${displayName(playingTrack)}`;
             } else {
                 status = process.platform === 'win32'
                     ? 'Pause is available on macOS/Linux terminals'
@@ -164,15 +212,17 @@ function createApp(tracks, musicRoot, vlcBinary) {
         }
         if (key.toLowerCase() === 's') return stopPlayback();
         if (key.toLowerCase() === 'n') {
+            if (visibleTracks.length === 0) return render();
             return selectTrack(Math.min(
-                tracks.length - 1,
-                (playingIndex >= 0 ? playingIndex : selectedIndex) + 1
+                visibleTracks.length - 1,
+                selectedIndex + 1
             ));
         }
         if (key.toLowerCase() === 'p') {
+            if (visibleTracks.length === 0) return render();
             return selectTrack(Math.max(
                 0,
-                (playingIndex >= 0 ? playingIndex : selectedIndex) - 1
+                selectedIndex - 1
             ));
         }
         if (key === '?') {
@@ -180,6 +230,32 @@ function createApp(tracks, musicRoot, vlcBinary) {
             return render();
         }
         if (/^\d$/.test(key)) return queueNumber(key);
+    }
+
+    function handleSearchKey(key) {
+        if (key === '\u001b') {
+            searchMode = false;
+            searchQuery = '';
+            applySearch();
+            return render();
+        }
+        if (key === '\r' || key === '\n') {
+            searchMode = false;
+            status = searchQuery
+                ? `${visibleTracks.length} search result${visibleTracks.length === 1 ? '' : 's'}`
+                : 'Search cleared';
+            return render();
+        }
+        if (key === '\u007f' || key === '\b') {
+            searchQuery = searchQuery.slice(0, -1);
+            applySearch();
+            return render();
+        }
+        if (key.length === 1 && key >= ' ') {
+            searchQuery += key;
+            applySearch();
+            return render();
+        }
     }
 
     function seek(seconds) {
