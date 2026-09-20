@@ -28,13 +28,15 @@ VLC_PATH="/path/to/vlc" npm start -- /path/to/your/music
 | `↑` / `↓` or `k` / `j` | Select a track |
 | `Enter` | Play the selected track |
 | `1`–`9999` | Jump to a track number; press Enter or wait briefly |
-| `Space` | Pause/resume on macOS and Linux |
+| `Space` | Pause/resume through VLC |
 | `n` / `p` | Play next/previous track |
 | `s` | Stop playback |
 | `?` | Show the full help line |
 | `q` / `Ctrl+C` | Quit |
 
 The playlist is sorted by filename and supports common formats including MP3, FLAC, WAV, M4A, OGG, AAC, Opus, AIFF, and WMA.
+
+Playback commands are sent through VLC's remote-control interface, including pause/resume, stop, and quit.
 
 ## Project structure
 
