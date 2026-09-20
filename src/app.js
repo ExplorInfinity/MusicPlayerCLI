@@ -12,6 +12,7 @@ function createApp(tracks, musicRoot, vlcBinary) {
     let shuttingDown = false;
     let showHelp = false;
     let alternateScreenActive = false;
+    let renderTimer = null;
 
     const player = new VlcPlayer(vlcBinary, ({ error } = {}) => {
         if (shuttingDown) return;
@@ -94,26 +95,52 @@ function createApp(tracks, musicRoot, vlcBinary) {
             const isSelected = index === selectedIndex;
             const isPlaying = index === playingIndex;
             const marker = isPlaying ? (player.paused ? 'Ⅱ' : '▶') : ' ';
-            const prefix = `${String(index + 1).padStart(String(tracks.length).length, ' ')} ${marker} `;
-            const title = shorten(displayName(tracks[index]), Math.max(20, terminalWidth - prefix.length - 8));
-            const row = `${prefix}${title}`;
+            const prefix = ` ${marker} ${String(index + 1).padStart(String(tracks.length).length, ' ')} `;
+            const title = shorten(displayName(tracks[index]), Math.max(20, terminalWidth - prefix.length - 10));
+            const row = `${prefix} ${title} `;
             lines.push(isSelected ? `${ANSI.inverse}${row}${ANSI.reset}` : row);
         }
 
         if (start > 0) lines.splice(3, 0, `${ANSI.dim}  ↑ more above${ANSI.reset}`);
         if (end < tracks.length) lines.push(`${ANSI.dim}  ↓ more below${ANSI.reset}`);
         lines.push('');
+        lines.push(renderProgress(player.getProgress(), Math.min(34, Math.max(20, terminalWidth - 44))));
         lines.push(`${ANSI.yellow}${numberBuffer ? `Jump: ${numberBuffer}  •  ` : ''}${status}${ANSI.reset}`);
         lines.push(showHelp
-            ? `${keycap('↑/↓')} ${ANSI.dim}Move${ANSI.reset}  ${keycap('ENTER')} ${ANSI.dim}Play${ANSI.reset}  ${keycap('1–9999')} ${ANSI.dim}Jump${ANSI.reset}  ${keycap('SPACE')} ${ANSI.dim}Pause${ANSI.reset}  ${keycap('N/P')} ${ANSI.dim}Next/prev${ANSI.reset}  ${keycap('S')} ${ANSI.dim}Stop${ANSI.reset}  ${keycap('?')} ${ANSI.dim}Hide help${ANSI.reset}  ${keycap('Q')} ${ANSI.dim}Quit${ANSI.reset}`
-            : `${keycap('↑/↓')} ${ANSI.dim}Move${ANSI.reset}  ${keycap('ENTER')} ${ANSI.dim}Play${ANSI.reset}  ${keycap('1–9999')} ${ANSI.dim}Jump${ANSI.reset}  ${keycap('SPACE')} ${ANSI.dim}Pause${ANSI.reset}  ${keycap('N')} ${ANSI.dim}Next${ANSI.reset}  ${keycap('S')} ${ANSI.dim}Stop${ANSI.reset}  ${keycap('?')} ${ANSI.dim}Help${ANSI.reset}  ${keycap('Q')} ${ANSI.dim}Quit${ANSI.reset}`);
+            ? `${keycap('←/→')} ${ANSI.dim}Skip 5s${ANSI.reset}  ${keycap('↑/↓')} ${ANSI.dim}Move${ANSI.reset}  ${keycap('ENTER')} ${ANSI.dim}Play${ANSI.reset}  ${keycap('1–9999')} ${ANSI.dim}Jump${ANSI.reset}  ${keycap('SPACE')} ${ANSI.dim}Pause${ANSI.reset}  ${keycap('N/P')} ${ANSI.dim}Next/prev${ANSI.reset}  ${keycap('S')} ${ANSI.dim}Stop${ANSI.reset}  ${keycap('?')} ${ANSI.dim}Hide help${ANSI.reset}  ${keycap('Q')} ${ANSI.dim}Quit${ANSI.reset}`
+            : `${keycap('←/→')} ${ANSI.dim}Skip 5s${ANSI.reset}  ${keycap('↑/↓')} ${ANSI.dim}Move${ANSI.reset}  ${keycap('ENTER')} ${ANSI.dim}Play${ANSI.reset}  ${keycap('1–9999')} ${ANSI.dim}Jump${ANSI.reset}  ${keycap('SPACE')} ${ANSI.dim}Pause${ANSI.reset}  ${keycap('N')} ${ANSI.dim}Next${ANSI.reset}  ${keycap('S')} ${ANSI.dim}Stop${ANSI.reset}  ${keycap('?')} ${ANSI.dim}Help${ANSI.reset}  ${keycap('Q')} ${ANSI.dim}Quit${ANSI.reset}`);
 
         process.stdout.write(`${ANSI.clear}${lines.join('\n')}`);
+    }
+
+    function renderProgress(progress, width) {
+        const duration = Math.max(0, progress.durationSeconds);
+        const current = duration > 0
+            ? Math.min(duration, Math.max(0, progress.currentSeconds))
+            : Math.max(0, progress.currentSeconds);
+        const ratio = duration > 0 ? current / duration : 0;
+        const filled = Math.round(ratio * width);
+        const bar = `${ANSI.cyan}${'━'.repeat(filled)}${ANSI.dim}${'─'.repeat(width - filled)}${ANSI.reset}`;
+        const currentLabel = progress.active ? formatTime(current, true) : '--:--';
+        const durationLabel = duration > 0 ? formatTime(duration, true) : '--:--';
+        return `${bar} ${currentLabel} / ${durationLabel}`;
+    }
+
+    function formatTime(seconds, showZero = false) {
+        if ((!seconds || seconds < 0) && !showZero) return '--:--';
+        const total = Math.floor(seconds);
+        const minutes = Math.floor(total / 60);
+        const remainingSeconds = String(total % 60).padStart(2, '0');
+        if (minutes < 60) return `${String(minutes).padStart(2, '0')}:${remainingSeconds}`;
+        const hours = Math.floor(minutes / 60);
+        return `${hours}:${String(minutes % 60).padStart(2, '0')}:${remainingSeconds}`;
     }
 
     function handleKey(data) {
         const key = data.toString();
         if (key === '\u0003' || key.toLowerCase() === 'q') return shutdown();
+        if (key === '\x1b[D' || key === '\x1bOD') return seek(-5);
+        if (key === '\x1b[C' || key === '\x1bOC') return seek(5);
         if (key === '\x1b[A' || key === '\x1bOA' || key.toLowerCase() === 'k') {
             selectedIndex = Math.max(0, selectedIndex - 1);
             status = 'Ready — press Enter to play';
@@ -155,10 +182,20 @@ function createApp(tracks, musicRoot, vlcBinary) {
         if (/^\d$/.test(key)) return queueNumber(key);
     }
 
+    function seek(seconds) {
+        if (player.seekBy(seconds)) {
+            status = `${seconds < 0 ? 'Skipped back' : 'Skipped forward'} 5 seconds`;
+        } else {
+            status = 'Nothing is playing';
+        }
+        render();
+    }
+
     function shutdown() {
         if (shuttingDown) return;
         shuttingDown = true;
         if (numberTimer) clearTimeout(numberTimer);
+        if (renderTimer) clearInterval(renderTimer);
         player.stop();
         if (process.stdin.isTTY) {
             process.stdin.setRawMode(false);
@@ -182,6 +219,7 @@ function createApp(tracks, musicRoot, vlcBinary) {
             process.stdin.on('data', handleKey);
             process.once('SIGINT', shutdown);
             process.once('exit', () => {
+                if (renderTimer) clearInterval(renderTimer);
                 player.stop();
                 if (alternateScreenActive) {
                     process.stdout.write(`${ANSI.reset}${ANSI.showCursor}${ANSI.alternateScreenOff}`);
@@ -189,6 +227,7 @@ function createApp(tracks, musicRoot, vlcBinary) {
             });
             process.stdout.write(`${ANSI.alternateScreenOn}${ANSI.hideCursor}${ANSI.clear}`);
             alternateScreenActive = true;
+            renderTimer = setInterval(render, 500);
             render();
         },
         shutdown

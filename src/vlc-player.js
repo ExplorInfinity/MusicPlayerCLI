@@ -3,6 +3,7 @@ const { spawn } = require('node:child_process');
 const POLL_INTERVAL_MS = 350;
 const QUERY_TIMEOUT_MS = 1500;
 const START_GRACE_PERIOD_MS = 1500;
+const SEEK_SYNC_GRACE_PERIOD_MS = 1200;
 
 class VlcPlayer {
     constructor(binary, onTrackFinished) {
@@ -19,6 +20,8 @@ class VlcPlayer {
         this.currentSeconds = 0;
         this.startedAt = 0;
         this.hasPlayed = false;
+        this.clockUpdatedAt = 0;
+        this.ignoreTimeUntil = 0;
     }
 
     play(filePath) {
@@ -47,6 +50,8 @@ class VlcPlayer {
         this.currentSeconds = 0;
         this.startedAt = Date.now();
         this.hasPlayed = false;
+        this.clockUpdatedAt = this.startedAt;
+        this.ignoreTimeUntil = 0;
 
         child.stdout.setEncoding('utf8');
         child.stdout.on('data', (data) => this.handleOutput(child, data));
@@ -73,8 +78,36 @@ class VlcPlayer {
 
     togglePause() {
         if (!this.process) return false;
+        this.refreshLocalClock();
         const sent = this.sendCommand('pause');
-        if (sent) this.paused = !this.paused;
+        if (sent) {
+            this.paused = !this.paused;
+            this.clockUpdatedAt = Date.now();
+        }
+        return sent;
+    }
+
+    seekBy(seconds) {
+        if (!this.process) return false;
+        this.refreshLocalClock();
+        const maximum = this.durationSeconds > 0 ? this.durationSeconds : Number.POSITIVE_INFINITY;
+        const target = Math.min(
+            maximum,
+            Math.max(0, Math.floor(this.currentSeconds + seconds))
+        );
+        // Do not let a pre-seek get_time response overwrite the new position.
+        this.pendingQuery = null;
+        this.queryIndex = 0;
+        this.ignoreTimeUntil = Date.now() + SEEK_SYNC_GRACE_PERIOD_MS;
+        const sent = this.sendCommand(`seek ${target}`);
+        if (sent) {
+            this.currentSeconds = target;
+            this.clockUpdatedAt = Date.now();
+            this.hasPlayed = true;
+            // VLC can remain stopped after a seek on some inputs. Resume only
+            // when the player was already playing; a paused track stays paused.
+            if (!this.paused) this.sendCommand('play');
+        }
         return sent;
     }
 
@@ -91,6 +124,7 @@ class VlcPlayer {
             // VLC may have ended between the check and the command.
         }
         this.paused = false;
+        this.clockUpdatedAt = 0;
     }
 
     sendCommand(command) {
@@ -103,6 +137,25 @@ class VlcPlayer {
         }
     }
 
+    getProgress() {
+        this.refreshLocalClock();
+        return {
+            currentSeconds: this.currentSeconds,
+            durationSeconds: this.durationSeconds,
+            active: Boolean(this.process)
+        };
+    }
+
+    refreshLocalClock() {
+        if (!this.process || this.paused || !this.hasPlayed || !this.clockUpdatedAt) return;
+        const now = Date.now();
+        this.currentSeconds += (now - this.clockUpdatedAt) / 1000;
+        this.clockUpdatedAt = now;
+        if (this.durationSeconds > 0) {
+            this.currentSeconds = Math.min(this.currentSeconds, this.durationSeconds);
+        }
+    }
+
     pollProgress(child) {
         if (this.process !== child) return this.clearProgressPolling();
 
@@ -111,7 +164,9 @@ class VlcPlayer {
         }
         if (this.pendingQuery) return;
 
-        const commands = ['get_length', 'get_time', 'is_playing'];
+        const commands = this.durationSeconds > 0
+            ? ['get_time', 'is_playing']
+            : ['get_length', 'get_time', 'is_playing'];
         const command = commands[this.queryIndex % commands.length];
         this.queryIndex += 1;
         this.pendingQuery = { command, sentAt: Date.now() };
@@ -126,14 +181,18 @@ class VlcPlayer {
 
         for (const line of lines) {
             const value = line.trim();
-            if (!this.pendingQuery || !/^\d+$/.test(value)) continue;
+            const numericResponse = value.match(/^>\s*(\d+)$/) || value.match(/^(\d+)$/);
+            if (!this.pendingQuery || !numericResponse) continue;
 
             const query = this.pendingQuery.command;
             this.pendingQuery = null;
-            const number = Number(value);
+            const number = Number(numericResponse[1]);
             if (query === 'get_length') this.durationSeconds = number;
             if (query === 'get_time') {
-                this.currentSeconds = number;
+                if (Date.now() >= this.ignoreTimeUntil) {
+                    this.currentSeconds = number;
+                    this.clockUpdatedAt = Date.now();
+                }
                 if (number > 0) this.hasPlayed = true;
             }
             if (query === 'is_playing') {
